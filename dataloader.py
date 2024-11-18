@@ -5,6 +5,10 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
+def is_valid_image(filename):
+    """Checks if the file is a valid image based on its extension."""
+    return filename.lower().endswith(('jpg', 'jpeg', 'png', 'bmp', 'tiff'))
+
 class ValidDataset(Dataset):
     def __init__(self, upscale=8):
         """
@@ -18,7 +22,7 @@ class ValidDataset(Dataset):
         self.LR_thermal_dir = f'flir/images_thermal_val/LR_x{upscale}/data/'
         
         # Assuming all files in HR thermal directory should have corresponding pairs
-        self.keys = sorted(os.listdir(self.HR_thermal_dir))
+        self.keys = sorted([f for f in os.listdir(self.HR_thermal_dir) if is_valid_image(f)])
     
     def __getitem__(self, index):
         """
@@ -68,7 +72,7 @@ class RandomTrainDataset(Dataset):
         self.dbg = dbg
         
         # Assuming all files in HR thermal directory should have corresponding pairs
-        self.keys = sorted(os.listdir(self.HR_thermal_dir))
+        self.keys = sorted([f for f in os.listdir(self.HR_thermal_dir) if is_valid_image(f)])
         
         self.hr_images = []
         self.rgb_images = []
@@ -147,4 +151,3 @@ class RandomTrainDataset(Dataset):
     
     def __len__(self):
         return len(self.keys)
-
