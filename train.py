@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from dataloader import ValidDataset, RandomTrainDataset
 from utils import AverageMeter, Loss_PSNR, save_checkpoint, VGGPerceptualLoss
 from pytorch_ssim import SSIM
-from fw_sat_arch import FW_SAT
+from arch import FW_SAT
 
 
 # Load configuration
