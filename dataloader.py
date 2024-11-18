@@ -13,9 +13,9 @@ class ValidDataset(Dataset):
         Parameters:
         upscale (int): Upscaling factor (8 or 16) for the low-resolution thermal images.
         """
-        self.HR_vis_dir = '../images_rgb_val/data/'
-        self.HR_thermal_dir = '../images_thermal_val/data/'
-        self.LR_thermal_dir = f'../images_thermal_val/LR_x{upscale}/data/'
+        self.HR_vis_dir = 'flir/images_rgb_val/data/'
+        self.HR_thermal_dir = 'flir/images_thermal_val/data/'
+        self.LR_thermal_dir = f'flir/images_thermal_val/LR_x{upscale}/data/'
         
         # Assuming all files in HR thermal directory should have corresponding pairs
         self.keys = sorted(os.listdir(self.HR_thermal_dir))
@@ -59,9 +59,9 @@ class RandomTrainDataset(Dataset):
         dbg (bool): Debug mode flag.
         upscale (int): Upscaling factor (8 or 16) for the low-resolution thermal images.
         """
-        self.HR_vis_dir = '../images_rgb_train/data/'
-        self.HR_thermal_dir = '../images_thermal_train/data/'
-        self.LR_thermal_dir = f'../images_thermal_train/LR_x{upscale}/data/'
+        self.HR_vis_dir = 'flir/images_rgb_train/data/'
+        self.HR_thermal_dir = 'flir/images_thermal_train/data/'
+        self.LR_thermal_dir = f'flir/images_thermal_train/LR_x{upscale}/data/'
         self.upscale = upscale
         self.augment = augment
         self.crop_size = crop_size
