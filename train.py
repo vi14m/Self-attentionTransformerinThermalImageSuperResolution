@@ -59,18 +59,6 @@ def load_checkpoint(model, optimizer, resume_file):
     return 0, 0
 
 
-def save_checkpoint(outf, epoch, iteration, model, optimizer):
-    """Saves model and optimizer states to a checkpoint file."""
-    checkpoint_path = os.path.join(outf, f'checkpoint_epoch_{epoch}.pth')
-    torch.save({
-        'epoch': epoch,
-        'iteration': iteration,
-        'state_dict': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-    }, checkpoint_path)
-    print(f"Checkpoint saved at {checkpoint_path}")
-
-
 def plot_loss(train_losses, val_losses, epoch):
     """Plots training and validation loss over epochs."""
     plt.figure(figsize=(10, 6))
