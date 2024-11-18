@@ -5,92 +5,6 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-class ValidDataset(Dataset):
-    def __init__(self, upscale=8):
-        """
-        Dataset for validation images.
-        
-        Parameters:
-        upscale (int): Upscaling factor (8 or 16) for the low-resolution thermal images.
-        """
-        self.HR_vis_dir = 'flir/images_rgb_val/data/'
-        self.HR_thermal_dir = 'flir/images_thermal_val/data/'
-        self.LR_thermal_dir = f'flir/images_thermal_val/LR_x{upscale}/data/'
-        
-        # Assuming images in HR thermal directory should have corresponding pairs
-        self.keys = sorted(os.listdir(self.HR_thermal_dir))
-    
-    def get_common_identifier(self, filename):
-        """
-        Extract a common identifier from the filename.
-        
-        Parameters:
-        filename (str): The filename of the image.
-        
-        Returns:
-        str: The common part of the filename (identifier).
-        """
-        identifier = filename.split('-')[0]  # Modify this based on your filename structure
-        return identifier
-    
-    def __getitem__(self, index):
-        """
-        Get a data sample for validation.
-        
-        Parameters:
-        index (int): Index of the sample.
-        
-        Returns:
-        tuple: Low-resolution thermal, high-resolution visible, and high-resolution thermal images as tensors.
-        """
-        key = self.keys[index]
-        identifier = self.get_common_identifier(key)
-        
-        # Search for corresponding RGB and LR thermal images using the identifier
-        HR_thermal_path = os.path.join(self.HR_thermal_dir, key)
-        HR_vis_path = None
-        LR_thermal_path = None
-        
-        # Search for RGB and LR thermal images based on identifier
-        for file in os.listdir(self.HR_vis_dir):
-            if identifier in file:
-                HR_vis_path = os.path.join(self.HR_vis_dir, file)
-                break
-        
-        for file in os.listdir(self.LR_thermal_dir):
-            if identifier in file:
-                LR_thermal_path = os.path.join(self.LR_thermal_dir, file)
-                break
-        
-        # Check if the corresponding files are found
-        if not HR_vis_path or not LR_thermal_path:
-            print(f"Warning: Missing corresponding files for identifier {identifier}. Skipping.")
-            return None
-        
-        # Load images
-        HR_vis = Image.open(HR_vis_path)
-        HR_thermal = Image.open(HR_thermal_path)
-        
-        # Generate LR thermal image if not present
-        if not LR_thermal_path:
-            # Downsample the HR thermal image to create LR image
-            LR_thermal = HR_thermal.resize((HR_thermal.width // self.upscale, HR_thermal.height // self.upscale), Image.BICUBIC)
-        else:
-            LR_thermal = Image.open(LR_thermal_path)
-        
-        # Normalize and preprocess images
-        HR_vis = np.transpose(np.array(HR_vis) / 255.0, (2, 0, 1))
-        HR_thermal = np.expand_dims(np.array(HR_thermal)[:, :, 0] / 255.0, axis=0)
-        LR_thermal = np.expand_dims(np.array(LR_thermal)[:, :, 0] / 255.0, axis=0)
-        
-        return torch.tensor(LR_thermal, dtype=torch.float32), \
-               torch.tensor(HR_vis, dtype=torch.float32), \
-               torch.tensor(HR_thermal, dtype=torch.float32)
-    
-    def __len__(self):
-        return len(self.keys)
-
-
 class RandomTrainDataset(Dataset):
     def __init__(self, crop_size, augment=True, dbg=False, upscale=8):
         """
@@ -111,7 +25,7 @@ class RandomTrainDataset(Dataset):
         self.dbg = dbg
         
         # List all files in HR thermal directory
-        self.keys = sorted(os.listdir(self.HR_thermal_dir))
+        self.keys = sorted(self._get_image_files(self.HR_thermal_dir))
         
         self.hr_images = []
         self.rgb_images = []
@@ -125,7 +39,7 @@ class RandomTrainDataset(Dataset):
             LR_thermal_path = None
             
             # Search for RGB and LR thermal images based on identifier
-            for file in os.listdir(self.HR_vis_dir):
+            for file in self._get_image_files(self.HR_vis_dir):
                 if identifier in file:
                     HR_vis_path = os.path.join(self.HR_vis_dir, file)
                     break
@@ -146,6 +60,19 @@ class RandomTrainDataset(Dataset):
             self.hr_images.append(hr)
             self.rgb_images.append(rgb)
             self.lr_images.append(lr)
+    
+    def _get_image_files(self, directory):
+        """
+        Get a list of image files in a directory, excluding non-image files.
+        
+        Parameters:
+        directory (str): The directory to search for image files.
+        
+        Returns:
+        list: List of valid image file names.
+        """
+        valid_extensions = ('.jpg', '.jpeg', '.png')
+        return [f for f in os.listdir(directory) if f.lower().endswith(valid_extensions)]
     
     def get_common_identifier(self, filename):
         """
@@ -203,3 +130,82 @@ class RandomTrainDataset(Dataset):
     
     def __len__(self):
         return len(self.rgb_images)
+    
+    def augment_image(self, img, rotTimes, vFlip, hFlip):
+        """
+        Apply random augmentation to an image.
+        
+        Parameters:
+        img (np.array): Image to augment.
+        rotTimes (int): Number of 90-degree rotations.
+        vFlip (bool): Whether to flip vertically.
+        hFlip (bool): Whether to flip horizontally.
+        
+        Returns:
+        np.array: Augmented image.
+        """
+        for _ in range(rotTimes):
+            img = np.rot90(img, axes=(1, 2))
+        if vFlip:
+            img = img[:, :, ::-1]
+        if hFlip:
+            img = img[:, ::-1, :]
+        return img
+
+class ValidDataset(Dataset):
+    def __init__(self, upscale=8):
+        """
+        Dataset for validation images.
+        
+        Parameters:
+        upscale (int): Upscaling factor (8 or 16) for the low-resolution thermal images.
+        """
+        self.HR_vis_dir = 'flir/images_rgb_val/data/'
+        self.HR_thermal_dir = 'flir/images_thermal_val/data/'
+        self.LR_thermal_dir = f'flir/images_thermal_val/LR_x{upscale}/data/'
+        
+        # Assuming all files in HR thermal directory should have corresponding pairs
+        self.keys = sorted(self._get_image_files(self.HR_thermal_dir))
+    
+    def _get_image_files(self, directory):
+        """
+        Get a list of image files in a directory, excluding non-image files.
+        
+        Parameters:
+        directory (str): The directory to search for image files.
+        
+        Returns:
+        list: List of valid image file names.
+        """
+        valid_extensions = ('.jpg', '.jpeg', '.png')
+        return [f for f in os.listdir(directory) if f.lower().endswith(valid_extensions)]
+    
+    def __getitem__(self, index):
+        """
+        Get a data sample for validation.
+        
+        Parameters:
+        index (int): Index of the sample.
+        
+        Returns:
+        tuple: Low-resolution thermal, high-resolution visible, and high-resolution thermal images as tensors.
+        """
+        key = self.keys[index]
+        
+        # Assuming HR thermal and HR visible share the same filename in different directories
+        HR_thermal_path = os.path.join(self.HR_thermal_dir, key)
+        HR_vis_path = os.path.join(self.HR_vis_dir, key)
+        LR_thermal_path = os.path.join(self.LR_thermal_dir, key)
+        
+        HR_vis = np.array(Image.open(HR_vis_path)) / 255.0
+        HR_thermal = np.expand_dims(np.array(Image.open(HR_thermal_path))[:, :, 0] / 255.0, axis=0)
+        LR_thermal = np.expand_dims(np.array(Image.open(LR_thermal_path))[:, :, 0] / 255.0, axis=0)
+        
+        HR_vis = np.transpose(HR_vis, (2, 0, 1))  # Convert RGB image to channel-first format
+        
+        return torch.tensor(LR_thermal, dtype=torch.float32), \
+               torch.tensor(HR_vis, dtype=torch.float32), \
+               torch.tensor(HR_thermal, dtype=torch.float32)
+    
+    def __len__(self):
+        return len(self.keys)
