@@ -5,10 +5,6 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-def is_valid_image(filename):
-    """Checks if the file is a valid image based on its extension."""
-    return filename.lower().endswith(('jpg', 'jpeg', 'png', 'bmp', 'tiff'))
-
 class ValidDataset(Dataset):
     def __init__(self, upscale=8):
         """
@@ -21,8 +17,23 @@ class ValidDataset(Dataset):
         self.HR_thermal_dir = 'flir/images_thermal_val/data/'
         self.LR_thermal_dir = f'flir/images_thermal_val/LR_x{upscale}/data/'
         
-        # Assuming all files in HR thermal directory should have corresponding pairs
-        self.keys = sorted([f for f in os.listdir(self.HR_thermal_dir) if is_valid_image(f)])
+        # Assuming images in HR thermal directory should have corresponding pairs
+        self.keys = sorted(os.listdir(self.HR_thermal_dir))
+    
+    def get_common_identifier(self, filename):
+        """
+        Extract a common identifier from the filename.
+        
+        Parameters:
+        filename (str): The filename of the image.
+        
+        Returns:
+        str: The common part of the filename (identifier).
+        """
+        # Assuming filenames have the format: <common_id>-<rest_of_filename>.jpg
+        # Modify this logic based on your specific filename structure.
+        identifier = filename.split('-')[0]  # Extract the part before the first '-'
+        return identifier
     
     def __getitem__(self, index):
         """
@@ -35,12 +46,35 @@ class ValidDataset(Dataset):
         tuple: Low-resolution thermal, high-resolution visible, and high-resolution thermal images as tensors.
         """
         key = self.keys[index]
+        identifier = self.get_common_identifier(key)
         
-        # Assuming HR thermal and HR visible share the same filename in different directories
-        HR_thermal = Image.open(os.path.join(self.HR_thermal_dir, key))
-        HR_vis = Image.open(os.path.join(self.HR_vis_dir, key))
-        LR_thermal = Image.open(os.path.join(self.LR_thermal_dir, key))
+        # Search for corresponding RGB and LR thermal images using the identifier
+        HR_thermal_path = os.path.join(self.HR_thermal_dir, key)
+        HR_vis_path = None
+        LR_thermal_path = None
         
+        # Search for RGB and LR thermal images based on identifier
+        for file in os.listdir(self.HR_vis_dir):
+            if identifier in file:
+                HR_vis_path = os.path.join(self.HR_vis_dir, file)
+                break
+        
+        for file in os.listdir(self.LR_thermal_dir):
+            if identifier in file:
+                LR_thermal_path = os.path.join(self.LR_thermal_dir, file)
+                break
+        
+        # Check if the corresponding files are found
+        if not HR_vis_path or not LR_thermal_path:
+            print(f"Warning: Missing corresponding files for identifier {identifier}. Skipping.")
+            return None
+        
+        # Load images
+        HR_vis = Image.open(HR_vis_path)
+        HR_thermal = Image.open(HR_thermal_path)
+        LR_thermal = Image.open(LR_thermal_path)
+        
+        # Normalize and preprocess images
         HR_vis = np.transpose(np.array(HR_vis) / 255.0, (2, 0, 1))
         HR_thermal = np.expand_dims(np.array(HR_thermal)[:, :, 0] / 255.0, axis=0)
         LR_thermal = np.expand_dims(np.array(LR_thermal)[:, :, 0] / 255.0, axis=0)
@@ -51,6 +85,7 @@ class ValidDataset(Dataset):
     
     def __len__(self):
         return len(self.keys)
+
 
 class RandomTrainDataset(Dataset):
     def __init__(self, crop_size, augment=True, dbg=False, upscale=8):
@@ -71,42 +106,57 @@ class RandomTrainDataset(Dataset):
         self.crop_size = crop_size
         self.dbg = dbg
         
-        # Assuming all files in HR thermal directory should have corresponding pairs
-        self.keys = sorted([f for f in os.listdir(self.HR_thermal_dir) if is_valid_image(f)])
+        # List all files in HR thermal directory
+        self.keys = sorted(os.listdir(self.HR_thermal_dir))
         
         self.hr_images = []
         self.rgb_images = []
         self.lr_images = []
         
         for key in self.keys:
-            hr = np.array(Image.open(os.path.join(self.HR_thermal_dir, key))) / 255.0
-            rgb = np.array(Image.open(os.path.join(self.HR_vis_dir, key))) / 255.0
-            lr = np.array(Image.open(os.path.join(self.LR_thermal_dir, key))) / 255.0
+            identifier = self.get_common_identifier(key)
+            
+            HR_thermal_path = os.path.join(self.HR_thermal_dir, key)
+            HR_vis_path = None
+            LR_thermal_path = None
+            
+            # Search for RGB and LR thermal images based on identifier
+            for file in os.listdir(self.HR_vis_dir):
+                if identifier in file:
+                    HR_vis_path = os.path.join(self.HR_vis_dir, file)
+                    break
+            
+            for file in os.listdir(self.LR_thermal_dir):
+                if identifier in file:
+                    LR_thermal_path = os.path.join(self.LR_thermal_dir, file)
+                    break
+            
+            # Skip if any files are missing
+            if not HR_vis_path or not LR_thermal_path:
+                print(f"Warning: Missing corresponding files for identifier {identifier}. Skipping.")
+                continue
+            
+            # Load images
+            hr = np.array(Image.open(HR_thermal_path)) / 255.0
+            rgb = np.array(Image.open(HR_vis_path)) / 255.0
+            lr = np.array(Image.open(LR_thermal_path)) / 255.0
             
             self.hr_images.append(hr)
             self.rgb_images.append(rgb)
             self.lr_images.append(lr)
     
-    def augment_image(self, img, rotTimes, vFlip, hFlip):
+    def get_common_identifier(self, filename):
         """
-        Apply random augmentation to an image.
+        Extract a common identifier from the filename.
         
         Parameters:
-        img (np.array): Image to augment.
-        rotTimes (int): Number of 90-degree rotations.
-        vFlip (bool): Whether to flip vertically.
-        hFlip (bool): Whether to flip horizontally.
+        filename (str): The filename of the image.
         
         Returns:
-        np.array: Augmented image.
+        str: The common part of the filename (identifier).
         """
-        for _ in range(rotTimes):
-            img = np.rot90(img, axes=(1, 2))
-        if vFlip:
-            img = img[:, :, ::-1]
-        if hFlip:
-            img = img[:, ::-1, :]
-        return img
+        identifier = filename.split('-')[0]  # Modify based on your filename structure
+        return identifier
     
     def __getitem__(self, idx):
         """
@@ -150,4 +200,4 @@ class RandomTrainDataset(Dataset):
         return torch.tensor(crop_lr), torch.tensor(crop_rgb), torch.tensor(crop_hr)
     
     def __len__(self):
-        return len(self.keys)
+        return len(self.rgb_images)
