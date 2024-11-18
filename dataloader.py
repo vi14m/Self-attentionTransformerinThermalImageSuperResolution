@@ -148,8 +148,3 @@ class RandomTrainDataset(Dataset):
     def __len__(self):
         return len(self.keys)
 
-
-# Sample display of batch processing
-data_iter = iter(train_loader)
-images = next(data_iter)
-print(f"Batch size: {images.size()}")
