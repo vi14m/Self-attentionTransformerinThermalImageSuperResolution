@@ -30,9 +30,7 @@ class ValidDataset(Dataset):
         Returns:
         str: The common part of the filename (identifier).
         """
-        # Assuming filenames have the format: <common_id>-<rest_of_filename>.jpg
-        # Modify this logic based on your specific filename structure.
-        identifier = filename.split('-')[0]  # Extract the part before the first '-'
+        identifier = filename.split('-')[0]  # Modify this based on your filename structure
         return identifier
     
     def __getitem__(self, index):
@@ -72,7 +70,13 @@ class ValidDataset(Dataset):
         # Load images
         HR_vis = Image.open(HR_vis_path)
         HR_thermal = Image.open(HR_thermal_path)
-        LR_thermal = Image.open(LR_thermal_path)
+        
+        # Generate LR thermal image if not present
+        if not LR_thermal_path:
+            # Downsample the HR thermal image to create LR image
+            LR_thermal = HR_thermal.resize((HR_thermal.width // self.upscale, HR_thermal.height // self.upscale), Image.BICUBIC)
+        else:
+            LR_thermal = Image.open(LR_thermal_path)
         
         # Normalize and preprocess images
         HR_vis = np.transpose(np.array(HR_vis) / 255.0, (2, 0, 1))
@@ -126,15 +130,13 @@ class RandomTrainDataset(Dataset):
                     HR_vis_path = os.path.join(self.HR_vis_dir, file)
                     break
             
-            for file in os.listdir(self.LR_thermal_dir):
-                if identifier in file:
-                    LR_thermal_path = os.path.join(self.LR_thermal_dir, file)
-                    break
-            
-            # Skip if any files are missing
-            if not HR_vis_path or not LR_thermal_path:
-                print(f"Warning: Missing corresponding files for identifier {identifier}. Skipping.")
-                continue
+            # If LR thermal images don't exist, generate them
+            LR_thermal_path = os.path.join(self.LR_thermal_dir, f"{identifier}-LR.png")
+            if not os.path.exists(LR_thermal_path):
+                # Downsample HR thermal to create LR image
+                HR_thermal = Image.open(HR_thermal_path)
+                LR_thermal = HR_thermal.resize((HR_thermal.width // self.upscale, HR_thermal.height // self.upscale), Image.BICUBIC)
+                LR_thermal.save(LR_thermal_path)  # Save the generated LR image
             
             # Load images
             hr = np.array(Image.open(HR_thermal_path)) / 255.0
