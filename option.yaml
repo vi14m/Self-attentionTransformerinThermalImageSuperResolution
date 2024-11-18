@@ -1,0 +1,9 @@
+resume_file : None
+batch_size : 8
+end_epoch : 100
+init_lr : '1e-4'
+outf : './exp/'
+gpu_id : '0'
+patch_size : 32
+model_description : 'FW-SAT'
+upscale_factor : 8
