@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.autograd import Variable
 import matplotlib.pyplot as plt
 
-from dataloader import ValidDataset, RandomTrainDataset
+from dataloader import ValidDataset, RandomTrainDataset  # Ensure these are updated
 from utils import AverageMeter, Loss_PSNR, save_checkpoint, VGGPerceptualLoss
 from pytorch_ssim import SSIM
 from arch import FW_SAT
@@ -35,14 +35,60 @@ def initialize_tensorboard(outf):
 
 
 def load_datasets(config):
-    train_data = RandomTrainDataset(crop_size=config['patch_size'], upscale=config['upscale_factor'])
-    val_data = ValidDataset(upscale=config['upscale_factor'])
-    train_loader = DataLoader(dataset=train_data, batch_size=config['batch_size'], shuffle=True, num_workers=2, pin_memory=True)
-    val_loader = DataLoader(dataset=val_data, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
+    """
+    Load the training and validation datasets.
+    """
+    train_rgb_dir = 'flir/images_rgb_train/data'
+    train_thermal_dir = 'flir/images_thermal_train/data'
+    val_rgb_dir = 'flir/images_rgb_val/data'
+    val_thermal_dir = 'flir/images_thermal_val/data'
+
+    # Create datasets
+    train_data = RandomTrainDataset(
+        rgb_dir=train_rgb_dir,
+        thermal_dir=train_thermal_dir,
+        transform=None,  # No cropping or augmentation applied
+    )
+    val_data = ValidDataset(
+        rgb_dir=val_rgb_dir,
+        thermal_dir=val_thermal_dir,
+        transform=None,  # Ensure this aligns with the validation logic
+    )
+
+    # Debugging: Check dataset sizes
+    print(f"Train Dataset: {len(train_data)} samples")
+    print(f"Validation Dataset: {len(val_data)} samples")
+
+    # Ensure datasets are non-empty
+    if len(train_data) == 0:
+        raise ValueError("Training dataset is empty. Check dataset paths or files.")
+    if len(val_data) == 0:
+        raise ValueError("Validation dataset is empty. Check dataset paths or files.")
+
+    # Create dataloaders
+    train_loader = DataLoader(
+        dataset=train_data,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
+
+    val_loader = DataLoader(
+        dataset=val_data,
+        batch_size=1,  # Validation is done one sample at a time
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True,
+    )
+
     return train_loader, val_loader
 
 
 def initialize_model():
+    """
+    Initialize the FW-SAT model.
+    """
     model = FW_SAT().cuda()
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
@@ -59,184 +105,94 @@ def load_checkpoint(model, optimizer, resume_file):
     return 0, 0
 
 
-def plot_loss(train_losses, val_losses, epoch):
-    """Plots training and validation loss over epochs."""
-    plt.figure(figsize=(10, 6))
-    plt.plot(train_losses, label='Train Loss', color='blue')
-    plt.plot(val_losses, label='Validation Loss', color='red')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title(f'Training vs Validation Loss at Epoch {epoch}')
-    plt.legend()
-    plt.show()
+def train_one_iteration(lr, rgb, hr, model, optimizer, criterion_L1, criterion_SSIM, criterion_Perceptual):
+    """
+    Train the model for one iteration.
+    """
+    lr, rgb, hr = lr.cuda(), rgb.cuda(), hr.cuda()
 
+    optimizer.zero_grad()
+    output = model(rgb, lr)
 
-def calculate_metrics(model, val_loader, criterion_PSNR, criterion_SSIM):
-    """Calculates PSNR and SSIM for the validation set."""
-    model.eval()
-    psnr_values = []
-    ssim_values = []
-    with torch.no_grad():
-        for lr, rgb, hr in val_loader:
-            lr, rgb, hr = lr.cuda(), rgb.cuda(), hr.cuda()
-            output = model(rgb, lr)
-            psnr = criterion_PSNR(output, hr)
-            ssim = criterion_SSIM(output, hr)
-            psnr_values.append(psnr.item())
-            ssim_values.append(ssim.item())
-    avg_psnr = sum(psnr_values) / len(psnr_values)
-    avg_ssim = sum(ssim_values) / len(ssim_values)
-    return avg_psnr, avg_ssim
+    l1_loss = criterion_L1(output, hr)
+    ssim_loss = 1 - criterion_SSIM(output, hr)
+    perceptual_loss = criterion_Perceptual(output, hr)
+    loss = 7 * l1_loss + ssim_loss + 0.15 * perceptual_loss
 
-
-def log_images(writer, iteration, lr, rgb, output, hr):
-    """Logs input and output images to TensorBoard."""
-    # Log sample images for inspection
-    writer.add_image('Low-Resolution Image', lr[0].cpu(), iteration)
-    writer.add_image('Ground Truth Image', hr[0].cpu(), iteration)
-    writer.add_image('Generated Image', output[0].cpu(), iteration)
-    print(f'Logged images for iteration {iteration}')
-
-
-class EarlyStopping:
-    """Early stopping to stop training if validation loss stops improving."""
-    def __init__(self, patience=10, delta=0):
-        self.patience = patience
-        self.delta = delta
-        self.best_score = None
-        self.early_stop_counter = 0
-
-    def step(self, val_loss):
-        """Checks if the validation loss has improved."""
-        if self.best_score is None:
-            self.best_score = val_loss
-        elif val_loss < self.best_score - self.delta:
-            self.best_score = val_loss
-            self.early_stop_counter = 0
-        else:
-            self.early_stop_counter += 1
-
-        if self.early_stop_counter >= self.patience:
-            print(f'Early stopping triggered after {self.patience} epochs with no improvement.')
-            return True
-        return False
+    loss.backward()
+    optimizer.step()
+    return loss, l1_loss, ssim_loss, perceptual_loss
 
 
 def validate(model, val_loader, criterion_PSNR, criterion_SSIM):
+    """
+    Validate the model on the validation dataset.
+    """
     model.eval()
-    losses_psnr = AverageMeter()
-    losses_ssim = AverageMeter()
+    psnr_meter = AverageMeter()
+    ssim_meter = AverageMeter()
 
-    for lr, rgb, hr in val_loader:
-        lr, rgb, hr = lr.cuda(), rgb.cuda(), hr.cuda()
-        with torch.no_grad():
-            output = model(rgb, lr)
-            loss_psnr = criterion_PSNR(output, hr)
-            loss_ssim = criterion_SSIM(output, hr)
-            losses_psnr.update(loss_psnr.data)
-            losses_ssim.update(loss_ssim.data)
-    return losses_psnr.avg, losses_ssim.avg
+    with torch.no_grad():
+        for rgb, thermal in val_loader:
+            rgb, thermal = rgb.cuda(), thermal.cuda()
+            output = model(rgb)
+
+            psnr = criterion_PSNR(output, thermal)
+            ssim = criterion_SSIM(output, thermal)
+
+            psnr_meter.update(psnr.item(), n=1)
+            ssim_meter.update(ssim.item(), n=1)
+
+    return psnr_meter.avg, ssim_meter.avg
 
 
 def main():
     config = load_config()
     setup_environment(config)
     writer = initialize_tensorboard(config['outf'])
-    
+
     print("\nLoading dataset...")
     train_loader, val_loader = load_datasets(config)
 
+    # Loss functions
     criterion_L1 = nn.L1Loss().cuda()
     criterion_PSNR = Loss_PSNR().cuda()
     criterion_SSIM = SSIM().cuda()
     criterion_Perceptual = VGGPerceptualLoss().cuda()
 
+    # Initialize model and optimizer
     model = initialize_model()
-
     optimizer = optim.Adam(model.parameters(), lr=float(config['init_lr']), betas=(0.9, 0.999))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000 * config['end_epoch'], eta_min=1e-6)
 
     start_epoch, iteration = load_checkpoint(model, optimizer, config['resume_file'])
     total_iteration = 1000 * config['end_epoch']
-    best_psnr, best_ssim = 0, 0
+
     prev_time = time.time()
 
-    # Initialize early stopping
-    early_stopping = EarlyStopping(patience=5, delta=0.001)
-
-    train_losses = []
-    val_losses = []
-
+    # Training loop
     while iteration < total_iteration:
         model.train()
-        losses = AverageMeter()
-        losses_l1 = AverageMeter()
-        losses_ssim = AverageMeter()
-        losses_perceptual = AverageMeter()
-
         for lr, rgb, hr in train_loader:
-            lr, rgb, hr = lr.cuda(), rgb.cuda(), hr.cuda()
-            optimizer.zero_grad()
-            output = model(rgb, lr)
-            l1_loss = criterion_L1(output, hr)
-            ssim_loss = 1 - criterion_SSIM(output, hr)
-            perceptual_loss = criterion_Perceptual(output, hr)
-            loss = 7 * l1_loss + ssim_loss + 0.15 * perceptual_loss
+            loss, l1_loss, ssim_loss, perceptual_loss = train_one_iteration(
+                lr, rgb, hr, model, optimizer, criterion_L1, criterion_SSIM, criterion_Perceptual
+            )
 
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            losses.update(loss.data)
-            losses_l1.update(l1_loss.data)
-            losses_ssim.update(ssim_loss.data)
-            losses_perceptual.update(perceptual_loss.data)
             iteration += 1
 
             if iteration % 100 == 0:
                 print(f'[Iter: {iteration}/{total_iteration}], LR={optimizer.param_groups[0]["lr"]:.9f}, '
-                      f'Train Loss={losses.avg:.9f}, L1 Loss={losses_l1.avg:.9f}, '
-                      f'SSIM Loss={losses_ssim.avg:.9f}, Perceptual Loss={losses_perceptual.avg:.9f}')
+                      f'Train Loss={loss:.9f}, L1 Loss={l1_loss:.9f}, SSIM Loss={ssim_loss:.9f}, Perceptual Loss={perceptual_loss:.9f}')
 
             if iteration % (1000 * (16 // config['batch_size'])) == 0:
                 psnr, ssim = validate(model, val_loader, criterion_PSNR, criterion_SSIM)
                 print(f'[Epoch: {iteration // 1000}/{config["end_epoch"]}], PSNR={psnr:.4f}, SSIM={ssim:.4f}')
-
-                writer.add_scalar('Train Loss', losses.avg, iteration // 1000)
-                writer.add_scalar('L1 Loss', losses_l1.avg, iteration // 1000)
-                writer.add_scalar('SSIM Loss', losses_ssim.avg, iteration // 1000)
-                writer.add_scalar('Perceptual Loss', losses_perceptual.avg, iteration // 1000)
-                writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], iteration // 1000)
                 writer.add_scalar('PSNR', psnr, iteration // 1000)
                 writer.add_scalar('SSIM', ssim, iteration // 1000)
 
-                if (psnr > best_psnr or ssim > best_ssim) and iteration // 1000 > 15:
-                    best_psnr = max(psnr, best_psnr)
-                    best_ssim = max(ssim, best_ssim)
-                    save_checkpoint(config['outf'], iteration // 1000, iteration, model, optimizer)
-
-                # Early stopping check
-                if early_stopping.step(val_loss=ssim):
-                    print("Training stopped early.")
-                    break
-
-            # Log images periodically
-            if iteration % 1000 == 0:
-                log_images(writer, iteration, lr, rgb, output, hr)
-
-            # Record losses for plotting
-            train_losses.append(losses.avg)
-            val_losses.append(ssim)
-
-            iters_done = iteration
-            iters_left = total_iteration - iters_done
-            time_left = datetime.timedelta(seconds=iters_left * (time.time() - prev_time))
+            time_left = datetime.timedelta(seconds=(total_iteration - iteration) * (time.time() - prev_time))
             prev_time = time.time()
             print(f'Time left: {time_left}')
-
-        # Plot the loss curves
-        if iteration % 1000 == 0:
-            plot_loss(train_losses, val_losses, iteration)
 
     print("Training complete.")
 

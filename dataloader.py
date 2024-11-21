@@ -1,206 +1,126 @@
 import os
-import random
-import numpy as np
+import re
 from PIL import Image
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-class RandomTrainDataset(Dataset):
-    def __init__(self, crop_size, augment=True, dbg=False, upscale=8):
-        """
-        Dataset for training with random crops and optional augmentations.
 
-        Parameters:
-        crop_size (int): Size of the crops to extract from the images.
-        augment (bool): Whether to apply data augmentation.
-        dbg (bool): Debug mode flag.
-        upscale (int): Upscaling factor (8 or 16) for the low-resolution thermal images.
-        """
-        self.HR_vis_dir = 'flir/images_rgb_train/data/'
-        self.HR_thermal_dir = 'flir/images_thermal_train/data/'
-        self.upscale = upscale
-        self.augment = augment
-        self.crop_size = crop_size
-        self.dbg = dbg
+def extract_numeric_id(filename):
+    """
+    Extracts the numeric ID from a filename.
+    Example: RGB10132.jpg -> 10132, thermal0001.jpg -> 0001
+    """
+    match = re.search(r'\d+', filename)
+    return match.group() if match else None
 
-        # List all files in HR thermal directory
-        self.keys = sorted(self._get_image_files(self.HR_thermal_dir))
-
-        self.hr_images = []
-        self.rgb_images = []
-        self.lr_images = []
-
-        for key in self.keys:
-            identifier = self.get_common_identifier(key)
-
-            HR_thermal_path = os.path.join(self.HR_thermal_dir, key)
-            HR_vis_path = None
-
-            # Search for RGB images based on identifier
-            for file in self._get_image_files(self.HR_vis_dir):
-                if identifier in file:
-                    HR_vis_path = os.path.join(self.HR_vis_dir, file)
-                    break
-
-            # Generate LR thermal image
-            LR_thermal_path = f"{HR_thermal_path.replace('.png', '')}-LR.png"
-            if not os.path.exists(LR_thermal_path):
-                # Downsample HR thermal to create LR image
-                HR_thermal = Image.open(HR_thermal_path)
-                LR_thermal = HR_thermal.resize((HR_thermal.width // self.upscale, HR_thermal.height // self.upscale), Image.BICUBIC)
-                LR_thermal.save(LR_thermal_path)  # Save the generated LR image
-
-            # Load images
-            hr = np.array(Image.open(HR_thermal_path)) / 255.0
-            rgb = np.array(Image.open(HR_vis_path)) / 255.0
-            lr = np.array(Image.open(LR_thermal_path)) / 255.0
-
-            self.hr_images.append(hr)
-            self.rgb_images.append(rgb)
-            self.lr_images.append(lr)
-
-    def _get_image_files(self, directory):
-        """
-        Get a list of image files in a directory, excluding non-image files.
-
-        Parameters:
-        directory (str): The directory to search for image files.
-
-        Returns:
-        list: List of valid image file names.
-        """
-        valid_extensions = ('.jpg', '.jpeg', '.png')
-        return [f for f in os.listdir(directory) if f.lower().endswith(valid_extensions)]
-
-    def get_common_identifier(self, filename):
-        """
-        Extract a common identifier from the filename.
-
-        Parameters:
-        filename (str): The filename of the image.
-
-        Returns:
-        str: The common part of the filename (identifier).
-        """
-        identifier = filename.split('-')[0]  # Modify based on your filename structure
-        return identifier
-
-    def __getitem__(self, idx):
-        """
-        Get a data sample for training with random crop and augmentation.
-
-        Parameters:
-        idx (int): Index of the sample.
-
-        Returns:
-        tuple: Low-resolution thermal, high-resolution visible, and high-resolution thermal images as tensors.
-        """
-        rgb = self.rgb_images[idx]
-        hr = self.hr_images[idx]
-        lr = self.lr_images[idx]
-
-        h, w, _ = lr.shape
-        xx = random.randint(0, h - self.crop_size)
-        yy = random.randint(0, w - self.crop_size)
-
-        crop_rgb = rgb[xx*self.upscale:xx*self.upscale+self.crop_size*self.upscale, yy*self.upscale:yy*self.upscale+self.crop_size*self.upscale, :]
-        crop_hr = hr[xx*self.upscale:xx*self.upscale+self.crop_size*self.upscale, yy*self.upscale:yy*self.upscale+self.crop_size*self.upscale, 0]
-        crop_lr = lr[xx:xx+self.crop_size, yy:yy+self.crop_size, 0]
-
-        crop_rgb = np.transpose(crop_rgb, (2, 0, 1))
-        crop_hr = np.expand_dims(crop_hr, axis=0)
-        crop_lr = np.expand_dims(crop_lr, axis=0)
-
-        if self.augment:
-            rotTimes = random.randint(0, 3)
-            vFlip = random.randint(0, 1)
-            hFlip = random.randint(0, 1)
-
-            crop_lr = self.augment_image(crop_lr, rotTimes, vFlip, hFlip)
-            crop_rgb = self.augment_image(crop_rgb, rotTimes, vFlip, hFlip)
-            crop_hr = self.augment_image(crop_hr, rotTimes, vFlip, hFlip)
-
-        crop_lr = np.ascontiguousarray(crop_lr, dtype=np.float32)
-        crop_rgb = np.ascontiguousarray(crop_rgb, dtype=np.float32)
-        crop_hr = np.ascontiguousarray(crop_hr, dtype=np.float32)
-
-        return torch.tensor(crop_lr), torch.tensor(crop_rgb), torch.tensor(crop_hr)
-
-    def __len__(self):
-        return len(self.rgb_images)
-
-    def augment_image(self, img, rotTimes, vFlip, hFlip):
-        """
-        Apply random augmentation to an image.
-
-        Parameters:
-        img (np.array): Image to augment.
-        rotTimes (int): Number of 90-degree rotations.
-        vFlip (bool): Whether to flip vertically.
-        hFlip (bool): Whether to flip horizontally.
-
-        Returns:
-        np.array: Augmented image.
-        """
-        for _ in range(rotTimes):
-            img = np.rot90(img, axes=(1, 2))
-        if vFlip:
-            img = img[:, :, ::-1]
-        if hFlip:
-            img = img[:, ::-1, :]
-        return img
 
 class ValidDataset(Dataset):
-    def __init__(self, upscale=8):
-        """
-        Dataset for validation images.
+    """
+    Dataset for validation without augmentations or cropping.
 
-        Parameters:
-        upscale (int): Upscaling factor (8 or 16) for the low-resolution thermal images.
-        """
-        self.HR_vis_dir = 'flir/images_rgb_val/data/'
-        self.HR_thermal_dir = 'flir/images_thermal_val/data/'
-        self.upscale = upscale
+    Parameters:
+    rgb_dir (str): Directory containing RGB images.
+    thermal_dir (str): Directory containing thermal images.
+    transform (callable, optional): Transformations to apply to the images.
+    """
+    def __init__(self, rgb_dir, thermal_dir, transform=None):
+        self.rgb_dir = rgb_dir
+        self.thermal_dir = thermal_dir
+        self.transform = transform
 
-        # Assuming all files in HR thermal directory should have corresponding pairs
-        self.keys = sorted(self._get_image_files(self.HR_thermal_dir))
+        # List files in directories
+        self.rgb_images = sorted(os.listdir(rgb_dir))
+        self.thermal_images = sorted(os.listdir(thermal_dir))
 
-    def _get_image_files(self, directory):
-        """
-        Get a list of image files in a directory, excluding non-image files.
+        # Match files by numeric ID
+        rgb_ids = {extract_numeric_id(f): f for f in self.rgb_images}
+        thermal_ids = {extract_numeric_id(f): f for f in self.thermal_images}
+        common_ids = set(rgb_ids.keys()).intersection(thermal_ids.keys())
 
-        Parameters:
-        directory (str): The directory to search for image files.
+        # Create valid pairs
+        self.image_pairs = [
+            (os.path.join(rgb_dir, rgb_ids[id]), os.path.join(thermal_dir, thermal_ids[id]))
+            for id in common_ids
+        ]
 
-        Returns:
-        list: List of valid image file names.
-        """
-        valid_extensions = ('.jpg', '.jpeg', '.png')
-        return [f for f in os.listdir(directory) if f.lower().endswith(valid_extensions)]
+        if len(self.image_pairs) == 0:
+            raise ValueError("No matching RGB and thermal image pairs found. Check your data directories.")
 
     def __getitem__(self, index):
-        """
-        Get a data sample for validation.
+        rgb_path, thermal_path = self.image_pairs[index]
 
-        Parameters:
-        index (int): Index of the sample.
+        # Open images
+        rgb = Image.open(rgb_path).convert('RGB')
+        thermal = Image.open(thermal_path).convert('L')  # Thermal is single channel
 
-        Returns:
-        tuple: Low-resolution thermal, high-resolution visible, and high-resolution thermal images as tensors.
-        """
-        key = self.keys[index]
+        # Apply transformations if provided
+        if self.transform:
+            rgb, thermal = self.transform(rgb, thermal)
 
-        # Assuming HR thermal and HR visible share the same filename in different directories
-        HR_thermal_path = os.path.join(self.HR_thermal_dir, key)
-        HR_vis_path = os.path.join(self.HR_vis_dir, key)
-
-        HR_vis = np.array(Image.open(HR_vis_path)) / 255.0
-        HR_thermal = np.expand_dims(np.array(Image.open(HR_thermal_path))[:, :, 0] / 255.0, axis=0)
-
-        HR_vis = np.transpose(HR_vis, (2, 0, 1))  # Convert RGB image to channel-first format
-
-        return torch.tensor(HR_thermal, dtype=torch.float32), \
-               torch.tensor(HR_vis, dtype=torch.float32)
+        return rgb, thermal
 
     def __len__(self):
-        return len(self.keys)
+        return len(self.image_pairs)
+
+
+class RandomTrainDataset(Dataset):
+    """
+    Dataset for training without cropping and augmentations.
+
+    Parameters:
+    rgb_dir (str): Directory containing RGB images.
+    thermal_dir (str): Directory containing thermal images.
+    transform (callable, optional): Transformations to apply to the images.
+    """
+    def __init__(self, rgb_dir, thermal_dir, transform=None):
+        self.rgb_dir = rgb_dir
+        self.thermal_dir = thermal_dir
+        self.transform = transform
+
+        # List files in directories
+        self.rgb_images = sorted(os.listdir(rgb_dir))
+        self.thermal_images = sorted(os.listdir(thermal_dir))
+
+        # Match files by numeric ID
+        rgb_ids = {extract_numeric_id(f): f for f in self.rgb_images}
+        thermal_ids = {extract_numeric_id(f): f for f in self.thermal_images}
+        common_ids = set(rgb_ids.keys()).intersection(thermal_ids.keys())
+
+        # Create valid pairs
+        self.image_pairs = [
+            (os.path.join(rgb_dir, rgb_ids[id]), os.path.join(thermal_dir, thermal_ids[id]))
+            for id in common_ids
+        ]
+
+        if len(self.image_pairs) == 0:
+            raise ValueError("No matching RGB and thermal image pairs found. Check your data directories.")
+
+    def __getitem__(self, index):
+        rgb_path, thermal_path = self.image_pairs[index]
+
+        # Convert images to numpy arrays normalized to [0, 1]
+        rgb = np.array(Image.open(rgb_path)) / 255.0
+        thermal = np.array(Image.open(thermal_path)) / 255.0
+
+        # Ensure the arrays are contiguous
+        rgb = rgb.copy()
+        thermal = thermal.copy()
+
+        # Convert to channel-first format
+        rgb = np.transpose(rgb, (2, 0, 1))
+        thermal = np.expand_dims(thermal, axis=0)
+
+        # Apply transformations if provided
+        if self.transform:
+            rgb, thermal = self.transform(rgb, thermal)
+
+        # Convert to PyTorch tensors
+        return (
+            torch.tensor(rgb, dtype=torch.float32),
+            torch.tensor(thermal, dtype=torch.float32),
+        )
+
+    def __len__(self):
+        return len(self.image_pairs)
+
